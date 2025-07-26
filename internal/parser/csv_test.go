@@ -287,8 +287,8 @@ func TestIsHeaderRow(t *testing.T) {
 			want:   false,
 		},
 		{
-			name:   "wrong number of fields",
-			record: []string{"timestamp", "username", "operation"},
+			name:   "data row with 3 fields",
+			record: []string{"123", "user123", "upload"},
 			want:   false,
 		},
 	}

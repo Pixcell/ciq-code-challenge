@@ -7,7 +7,22 @@ import (
 	"time"
 
 	"server-log-analyzer/internal/models"
+	"server-log-analyzer/internal/parser"
 )
+
+// setupLogsTable creates a logs table with the standard schema for testing
+func setupLogsTable(db DB) error {
+	schema := parser.TableSchema{
+		Name: "logs",
+		Columns: []parser.ColumnSchema{
+			{Name: "timestamp", Type: parser.TypeTimestamp, Index: true},
+			{Name: "username", Type: parser.TypeText, Index: true},
+			{Name: "operation", Type: parser.TypeText, Index: true},
+			{Name: "size", Type: parser.TypeInteger},
+		},
+	}
+	return CreateTableFromSchema(db, &schema, false)
+}
 
 // TestInitialize tests database initialization
 func TestInitialize(t *testing.T) {
@@ -44,15 +59,13 @@ func TestInitialize(t *testing.T) {
 				defer db.Close()
 
 				// Test that we can execute a simple query
-				results, err := ExecuteQuery(db, "SELECT name FROM sqlite_master WHERE type='table' AND name='logs';")
+				results, err := ExecuteQuery(db, "SELECT name FROM sqlite_master WHERE type='table';")
 				if err != nil {
 					t.Errorf("Failed to query database: %v", err)
 				}
 
-				// Should have logs table
-				if len(results) != 1 {
-					t.Error("Expected logs table to be created")
-				}
+				// Should be able to query (no specific table expected at initialization)
+				_ = results
 			}
 		})
 	}
@@ -65,6 +78,11 @@ func TestInsertLogEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+
+	// Create the logs table for testing
+	if err := setupLogsTable(db); err != nil {
+		t.Fatalf("Failed to setup logs table: %v", err)
+	}
 
 	tests := []struct {
 		name        string
@@ -107,7 +125,7 @@ func TestInsertLogEntries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			inserted, err := InsertLogEntries(db, tt.entries, false)
+			inserted, err := InsertLogEntries(db, tt.entries, false, "logs")
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("InsertLogEntries() error = %v, wantErr %v", err, tt.wantErr)
@@ -144,6 +162,11 @@ func TestInsertLogEntriesAppendMode(t *testing.T) {
 	}
 	defer db.Close()
 
+	// Create the logs table for testing
+	if err := setupLogsTable(db); err != nil {
+		t.Fatalf("Failed to setup logs table: %v", err)
+	}
+
 	// First batch of entries
 	firstBatch := []models.LogEntry{
 		{
@@ -161,7 +184,7 @@ func TestInsertLogEntriesAppendMode(t *testing.T) {
 	}
 
 	// Insert first batch (replace mode - should clear any existing data)
-	count1, err := InsertLogEntries(db, firstBatch, false)
+	count1, err := InsertLogEntries(db, firstBatch, false, "logs")
 	if err != nil {
 		t.Fatalf("Failed to insert first batch: %v", err)
 	}
@@ -189,7 +212,7 @@ func TestInsertLogEntriesAppendMode(t *testing.T) {
 	}
 
 	// Insert second batch in append mode
-	count2, err := InsertLogEntries(db, secondBatch, true)
+	count2, err := InsertLogEntries(db, secondBatch, true, "logs")
 	if err != nil {
 		t.Fatalf("Failed to insert second batch in append mode: %v", err)
 	}
@@ -232,7 +255,7 @@ func TestInsertLogEntriesAppendMode(t *testing.T) {
 		},
 	}
 
-	count3, err := InsertLogEntries(db, thirdBatch, false)
+	count3, err := InsertLogEntries(db, thirdBatch, false, "logs")
 	if err != nil {
 		t.Fatalf("Failed to insert third batch in replace mode: %v", err)
 	}
@@ -266,6 +289,11 @@ func TestExecuteQuery(t *testing.T) {
 	}
 	defer db.Close()
 
+	// Create the logs table for testing
+	if err := setupLogsTable(db); err != nil {
+		t.Fatalf("Failed to setup logs table: %v", err)
+	}
+
 	// Insert test data
 	testEntries := []models.LogEntry{
 		{
@@ -287,7 +315,7 @@ func TestExecuteQuery(t *testing.T) {
 			Size:      75,
 		},
 	}
-	_, err = InsertLogEntries(db, testEntries, false)
+	_, err = InsertLogEntries(db, testEntries, false, "logs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,6 +427,11 @@ func TestCreateTables(t *testing.T) {
 	}
 	defer db.Close()
 
+	// Create the logs table for testing
+	if err := setupLogsTable(db); err != nil {
+		t.Fatalf("Failed to setup logs table: %v", err)
+	}
+
 	// Verify logs table exists and has correct structure
 	results, err := ExecuteQuery(db, "PRAGMA table_info(logs)")
 	if err != nil {
@@ -446,6 +479,11 @@ func TestDatabaseConstraints(t *testing.T) {
 	}
 	defer db.Close()
 
+	// Create the logs table for testing
+	if err := setupLogsTable(db); err != nil {
+		t.Fatalf("Failed to setup logs table: %v", err)
+	}
+
 	tests := []struct {
 		name    string
 		query   string
@@ -457,14 +495,14 @@ func TestDatabaseConstraints(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "invalid operation constraint",
+			name:    "different operation is allowed in dynamic schema",
 			query:   "INSERT INTO logs (timestamp, username, operation, size) VALUES ('2020-04-15 10:00:00', 'test', 'delete', 100)",
-			wantErr: true,
+			wantErr: false, // Dynamic schema allows any string values
 		},
 		{
-			name:    "negative size constraint",
+			name:    "negative size is allowed in dynamic schema",
 			query:   "INSERT INTO logs (timestamp, username, operation, size) VALUES ('2020-04-15 10:00:00', 'test', 'upload', -100)",
-			wantErr: true,
+			wantErr: false, // Dynamic schema allows any integer values
 		},
 	}
 
@@ -487,6 +525,11 @@ func BenchmarkInsertLogEntries(b *testing.B) {
 	}
 	defer db.Close()
 
+	// Create the logs table for testing
+	if err := setupLogsTable(db); err != nil {
+		b.Fatalf("Failed to setup logs table: %v", err)
+	}
+
 	// Create test entries
 	entries := make([]models.LogEntry, 100)
 	baseTime := time.Unix(1587772800, 0)
@@ -501,7 +544,7 @@ func BenchmarkInsertLogEntries(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := InsertLogEntries(db, entries, false)
+		_, err := InsertLogEntries(db, entries, false, "logs")
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -515,6 +558,11 @@ func BenchmarkExecuteQuery(b *testing.B) {
 	}
 	defer db.Close()
 
+	// Create the logs table for testing
+	if err := setupLogsTable(db); err != nil {
+		b.Fatalf("Failed to setup logs table: %v", err)
+	}
+
 	// Insert test data
 	entries := make([]models.LogEntry, 1000)
 	baseTime := time.Unix(1587772800, 0)
@@ -526,7 +574,7 @@ func BenchmarkExecuteQuery(b *testing.B) {
 			Size:      i * 10,
 		}
 	}
-	_, err = InsertLogEntries(db, entries, false)
+	_, err = InsertLogEntries(db, entries, false, "logs")
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -551,6 +599,11 @@ func ExampleInitialize() {
 	}
 	defer db.Close()
 
+	// Create the logs table for testing
+	if err := setupLogsTable(db); err != nil {
+		return
+	}
+
 	// Insert some test data
 	entries := []models.LogEntry{
 		{
@@ -561,7 +614,7 @@ func ExampleInitialize() {
 		},
 	}
 
-	count, err := InsertLogEntries(db, entries, false)
+	count, err := InsertLogEntries(db, entries, false, "logs")
 	if err != nil {
 		return
 	}

@@ -52,6 +52,7 @@ internal/
 │   └── log_entry.go    # Log entry model
 └── parser/             # CSV parsing
     └── csv.go          # CSV parsing logic
+    └── schema.go       # Schema detection and management
 ```
 
 #### Key Features
@@ -63,21 +64,52 @@ internal/
 5. **Append Mode**: Support for adding new data to existing databases without clearing previous entries
 6. **Shared Configuration**: Centralized configuration management to ensure consistency across commands
 7. **Documentation**: Extensive code comments and usage examples
+8. **Dynamic Schema Detection**: Automatic detection of CSV structure and data types (enabled by default)
+9. **Multi-Table Support**: Load different CSV files into separate tables for complex analysis
+10. **Flexible Table Management**: Specify custom table names for both loading and querying operations
 
 ### Data Loading Modes
 
-The `load` command supports two modes for data insertion:
+The `load` command supports multiple modes and features:
+
+#### Schema Detection (Default: Enabled)
+```bash
+# Automatic schema detection analyzes CSV structure and data types
+server-log-analyzer load --file users.csv --table users --db analytics.db
+
+# Detected schema includes:
+# - Column names from CSV headers
+# - Data type inference (TEXT, INTEGER, REAL, DATETIME, BOOLEAN)
+# - Automatic indexing on commonly queried columns (username, timestamp, id, etc.)
+```
+
+#### Legacy Mode (Schema Detection Disabled)
+```bash
+# Uses fixed schema for backward compatibility: timestamp, username, operation, size
+server-log-analyzer load --file server_log.csv --db logs.db --schema-detection=false
+```
 
 #### Replace Mode (Default)
 ```bash
 # Clears existing data and loads new CSV data
-server-log-analyzer load --file new_logs.csv --db logs.db
+server-log-analyzer load --file new_logs.csv --db logs.db --table logs
 ```
 
 #### Append Mode
 ```bash
-# Adds new data to existing database without clearing previous entries
-server-log-analyzer load --file additional_logs.csv --db logs.db --append
+# Adds new data to existing table without clearing previous entries
+server-log-analyzer load --file additional_logs.csv --db logs.db --table logs --append
+
+# Creates table if it doesn't exist, even in append mode
+server-log-analyzer load --file users.csv --table users --db analytics.db --append
+```
+
+**Multi-Table Support:**
+```bash
+# Load different CSV files into separate tables
+server-log-analyzer load --file users.csv --table users --db analytics.db
+server-log-analyzer load --file access_logs.csv --table access_logs --db analytics.db --append
+server-log-analyzer load --file error_logs.csv --table errors --db analytics.db --append
 ```
 
 **Append Mode Features:**

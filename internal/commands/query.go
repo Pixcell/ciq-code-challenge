@@ -14,9 +14,10 @@ import (
 )
 
 // NewQueryCommand creates the 'query' subcommand for executing SQL queries
-// Usage: server-log-analyzer query [--db logs.db] [--sql "SELECT * FROM logs"]
+// Usage: server-log-analyzer query [--db logs.db] [--table logs] [--sql "SELECT * FROM logs"]
 func NewQueryCommand() *cobra.Command {
 	var dbFile string
+	var tableName string
 	var sqlQuery string
 
 	cmd := &cobra.Command{
@@ -25,46 +26,56 @@ func NewQueryCommand() *cobra.Command {
 		Long: `Execute SQL queries against the SQLite database containing log data.
 
 You can either provide a query directly via the --sql flag or enter interactive mode
-to execute multiple queries.
+to execute multiple queries. The --table flag sets the default table context but
+does not restrict queries to that table.
 
 SECURITY: Only read-only queries are allowed. Write operations (INSERT, UPDATE, DELETE,
 CREATE, DROP, etc.) are blocked for data protection.
 
 Common example queries:
-  # Count unique users
-  SELECT COUNT(DISTINCT username) as unique_users FROM logs;
+  # Count unique users (using default table)
+  SELECT COUNT(DISTINCT username) as unique_users FROM {table};
 
   # Count uploads larger than 50kB
-  SELECT COUNT(*) as large_uploads FROM logs WHERE operation = 'upload' AND size > 50;
+  SELECT COUNT(*) as large_uploads FROM {table} WHERE operation = 'upload' AND size > 50;
 
   # Count jeff22's uploads on specific date
-  SELECT COUNT(*) as jeffs_uploads FROM logs
+  SELECT COUNT(*) as jeffs_uploads FROM {table}
   WHERE username = 'jeff22' AND operation = 'upload'
   AND date(timestamp) = '2020-04-15';
 
+  # Multi-table query example
+  SELECT u.username, COUNT(*) as uploads
+  FROM users u JOIN access_logs a ON u.id = a.user_id
+  WHERE a.operation = 'upload';
+
 Interactive mode:
-  server-log-analyzer query --db logs.db
+  server-log-analyzer query --db logs.db --table logs
 
 Direct query:
   server-log-analyzer query --db logs.db --sql "SELECT COUNT(*) FROM logs"
+
+Table-specific query:
+  server-log-analyzer query --table users --sql "SELECT COUNT(*) FROM users"
 
 Note: This command currently accepts raw SQL queries. In future versions,
 this could be extended to support natural language queries that are
 automatically translated to SQL using AI/ML models.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQueryCommand(dbFile, sqlQuery)
+			return runQueryCommand(dbFile, tableName, sqlQuery)
 		},
 	}
 
 	// Define command flags
 	cmd.Flags().StringVarP(&dbFile, "db", "d", config.DefaultDatabaseFile, config.DatabaseFileDescription)
+	cmd.Flags().StringVarP(&tableName, "table", "t", config.DefaultTableName, config.TableNameDescription+" (used as context for queries)")
 	cmd.Flags().StringVarP(&sqlQuery, "sql", "s", "", "SQL query to execute (if not provided, enters interactive mode)")
 
 	return cmd
 }
 
 // runQueryCommand executes the query logic
-func runQueryCommand(dbFile, sqlQuery string) error {
+func runQueryCommand(dbFile, tableName, sqlQuery string) error {
 	// Validate database file exists
 	if _, err := os.Stat(dbFile); os.IsNotExist(err) {
 		return fmt.Errorf("database file does not exist: %s\nPlease run 'load' command first", dbFile)
@@ -79,14 +90,17 @@ func runQueryCommand(dbFile, sqlQuery string) error {
 
 	// Execute single query or enter interactive mode
 	if sqlQuery != "" {
-		return executeSingleQuery(db, sqlQuery)
+		return executeSingleQuery(db, sqlQuery, tableName)
 	}
 
-	return enterInteractiveMode(db, dbFile)
+	return enterInteractiveMode(db, dbFile, tableName)
 }
 
 // executeSingleQuery runs a single SQL query and displays results
-func executeSingleQuery(db database.DB, query string) error {
+func executeSingleQuery(db database.DB, query string, tableName string) error {
+	// Substitute {table} placeholder with actual table name
+	query = strings.ReplaceAll(query, "{table}", tableName)
+
 	fmt.Printf("Executing query: %s\n\n", query)
 
 	// Validate that query is read-only
@@ -104,13 +118,18 @@ func executeSingleQuery(db database.DB, query string) error {
 }
 
 // enterInteractiveMode provides an interactive SQL query interface
-func enterInteractiveMode(db database.DB, dbFile string) error {
+func enterInteractiveMode(db database.DB, dbFile string, tableName string) error {
 	fmt.Printf("Connected to database: %s\n", dbFile)
+	fmt.Printf("Default table context: %s\n", tableName)
 	fmt.Println("Interactive SQL query mode. Type 'exit' or 'quit' to exit.")
 	fmt.Println("SECURITY: Only read-only queries (SELECT, WITH, EXPLAIN) are allowed.")
+	fmt.Println("TIP: Use {table} as a placeholder for the default table name.")
 	fmt.Println("Example queries:")
-	fmt.Println("  SELECT COUNT(DISTINCT username) as unique_users FROM logs;")
-	fmt.Println("  SELECT COUNT(*) FROM logs WHERE operation = 'upload' AND size > 50;")
+	fmt.Printf("  SELECT COUNT(DISTINCT username) as unique_users FROM %s;\n", tableName)
+	fmt.Printf("  SELECT COUNT(*) FROM %s WHERE operation = 'upload' AND size > 50;\n", tableName)
+	fmt.Println("  SELECT COUNT(DISTINCT username) as unique_users FROM {table};")
+	fmt.Println("  PRAGMA table_info(" + tableName + ");  -- Show table schema")
+	fmt.Println("  .tables                              -- List all tables")
 	fmt.Println()
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -135,14 +154,25 @@ func enterInteractiveMode(db database.DB, dbFile string) error {
 			continue
 		}
 
+		// Handle special commands
+		if input == ".tables" {
+			if err := showTables(db); err != nil {
+				fmt.Printf("Error listing tables: %v\n\n", err)
+			}
+			continue
+		}
+
+		// Substitute {table} placeholder with actual table name
+		query := strings.ReplaceAll(input, "{table}", tableName)
+
 		// Execute query
 		// Validate that query is read-only
-		if err := ValidateReadOnlyQuery(input); err != nil {
+		if err := ValidateReadOnlyQuery(query); err != nil {
 			fmt.Printf("Error: %v\n\n", err)
 			continue
 		}
 
-		results, err := database.ExecuteQuery(db, input)
+		results, err := database.ExecuteQuery(db, query)
 		if err != nil {
 			fmt.Printf("Error: %v\n\n", err)
 			continue
@@ -308,5 +338,28 @@ func ValidateReadOnlyQuery(query string) error {
 		}
 	}
 
+	return nil
+}
+
+// showTables lists all tables in the database
+func showTables(db database.DB) error {
+	query := "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+	results, err := database.ExecuteQuery(db, query)
+	if err != nil {
+		return err
+	}
+
+	if len(results) == 0 {
+		fmt.Println("No tables found in database.")
+		return nil
+	}
+
+	fmt.Println("Tables in database:")
+	for _, result := range results {
+		if tableName, ok := result["name"].(string); ok {
+			fmt.Printf("  %s\n", tableName)
+		}
+	}
+	fmt.Println()
 	return nil
 }
