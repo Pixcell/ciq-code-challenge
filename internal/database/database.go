@@ -97,6 +97,15 @@ func createTables(db DB) error {
 
 // CreateTableFromSchema creates a table based on detected schema
 func CreateTableFromSchema(db DB, schema *parser.TableSchema, replaceMode bool) error {
+	// Validate schema
+	if schema.Name == "" {
+		return fmt.Errorf("table name cannot be empty")
+	}
+
+	if len(schema.Columns) == 0 {
+		return fmt.Errorf("table must have at least one column")
+	}
+
 	// Drop existing table if it exists (for replace mode)
 	if replaceMode {
 		dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s", schema.Name)

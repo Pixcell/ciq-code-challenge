@@ -3,6 +3,7 @@ package database
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -623,4 +624,531 @@ func ExampleInitialize() {
 
 	// Output:
 	// Inserted 1 entries
+}
+
+// TestCreateTableFromSchemaEdgeCases tests edge cases in schema creation
+func TestCreateTableFromSchemaEdgeCases(t *testing.T) {
+	db, err := Initialize(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	tests := []struct {
+		name    string
+		schema  parser.TableSchema
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid schema",
+			schema: parser.TableSchema{
+				Name: "test_table",
+				Columns: []parser.ColumnSchema{
+					{Name: "name", Type: parser.TypeText},
+					{Name: "email", Type: parser.TypeText},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty table name",
+			schema: parser.TableSchema{
+				Name: "",
+				Columns: []parser.ColumnSchema{
+					{Name: "column1", Type: parser.TypeInteger},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "no columns",
+			schema: parser.TableSchema{
+				Name:    "empty_table",
+				Columns: []parser.ColumnSchema{},
+			},
+			wantErr: true,
+		},
+		{
+			name: "special characters in table name",
+			schema: parser.TableSchema{
+				Name: "test_table_2",
+				Columns: []parser.ColumnSchema{
+					{Name: "column1", Type: parser.TypeInteger},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "unicode column names",
+			schema: parser.TableSchema{
+				Name: "unicode_test",
+				Columns: []parser.ColumnSchema{
+					{Name: "用户名", Type: parser.TypeText},
+					{Name: "email", Type: parser.TypeText},
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := CreateTableFromSchema(db, &tt.schema, false)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("Expected error but got none")
+				} else if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Expected error containing '%s', got '%s'", tt.errMsg, err.Error())
+				}
+			} else if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestCreateTableFromSchemaReplaceMode tests replace mode functionality
+func TestCreateTableFromSchemaReplaceMode(t *testing.T) {
+	db, err := Initialize(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create initial schema
+	schema1 := parser.TableSchema{
+		Name: "test_table",
+		Columns: []parser.ColumnSchema{
+			{Name: "name", Type: parser.TypeText},
+		},
+	}
+
+	err = CreateTableFromSchema(db, &schema1, false)
+	if err != nil {
+		t.Fatalf("Failed to create initial table: %v", err)
+	}
+
+	// Insert some data
+	_, err = db.Exec("INSERT INTO test_table (name) VALUES ('test1')")
+	if err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	// Verify data exists
+	results, err := ExecuteQuery(db, "SELECT COUNT(*) as count FROM test_table")
+	if err != nil {
+		t.Fatalf("Failed to count records: %v", err)
+	}
+	if len(results) == 0 || results[0]["count"].(int64) != 1 {
+		t.Fatal("Expected 1 record in table")
+	}
+
+	// Create new schema with replace mode
+	schema2 := parser.TableSchema{
+		Name: "test_table",
+		Columns: []parser.ColumnSchema{
+			{Name: "description", Type: parser.TypeText}, // Different column name
+		},
+	}
+
+	err = CreateTableFromSchema(db, &schema2, true) // Replace mode
+	if err != nil {
+		t.Fatalf("Failed to replace table: %v", err)
+	}
+
+	// Verify old data is gone
+	results, err = ExecuteQuery(db, "SELECT COUNT(*) as count FROM test_table")
+	if err != nil {
+		t.Fatalf("Failed to count records after replace: %v", err)
+	}
+	if len(results) == 0 || results[0]["count"].(int64) != 0 {
+		t.Error("Expected 0 records in replaced table")
+	}
+
+	// Verify new schema is in place
+	results, err = ExecuteQuery(db, "PRAGMA table_info(test_table)")
+	if err != nil {
+		t.Fatalf("Failed to get table info: %v", err)
+	}
+
+	hasDescription := false
+	for _, result := range results {
+		if name, ok := result["name"].(string); ok && name == "description" {
+			hasDescription = true
+			break
+		}
+	}
+	if !hasDescription {
+		t.Error("Expected 'description' column in replaced table")
+	}
+}
+
+// TestInsertRecordsEdgeCases tests edge cases in record insertion
+func TestInsertRecordsEdgeCases(t *testing.T) {
+	db, err := Initialize(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create test table
+	schema := parser.TableSchema{
+		Name: "test_records",
+		Columns: []parser.ColumnSchema{
+			{Name: "name", Type: parser.TypeText, Nullable: true},
+			{Name: "value", Type: parser.TypeInteger, Nullable: true},
+			{Name: "active", Type: parser.TypeBoolean, Nullable: true},
+		},
+	}
+	err = CreateTableFromSchema(db, &schema, false)
+	if err != nil {
+		t.Fatalf("Failed to create test table: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		headers []string
+		records [][]string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "empty headers",
+			headers: []string{},
+			records: [][]string{{"test", "123", "true"}},
+			wantErr: true,
+			errMsg:  "no headers",
+		},
+		{
+			name:    "empty records",
+			headers: []string{"name", "value", "active"},
+			records: [][]string{},
+			wantErr: false,
+		},
+		{
+			name:    "mismatched column count",
+			headers: []string{"name", "value"},
+			records: [][]string{{"test", "123", "true"}}, // 3 values for 2 headers
+			wantErr: true,
+		},
+		{
+			name:    "valid records",
+			headers: []string{"name", "value", "active"},
+			records: [][]string{
+				{"test1", "123", "true"},
+				{"test2", "456", "false"},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "records with empty values",
+			headers: []string{"name", "value", "active"},
+			records: [][]string{
+				{"", "0", "false"},
+				{"test", "", "true"},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "records with special characters",
+			headers: []string{"name", "value", "active"},
+			records: [][]string{
+				{"test'with\"quotes", "123", "true"},
+				{"test,with,commas", "456", "false"},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Clear table before each test
+			_, err := db.Exec("DELETE FROM test_records")
+			if err != nil {
+				t.Fatalf("Failed to clear table: %v", err)
+			}
+
+			count, err := InsertRecords(db, "test_records", tt.headers, tt.records)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("Expected error but got none")
+				} else if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Expected error containing '%s', got '%s'", tt.errMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				}
+				if count != int64(len(tt.records)) {
+					t.Errorf("Expected %d records inserted, got %d", len(tt.records), count)
+				}
+			}
+		})
+	}
+}
+
+// TestExecuteQueryEdgeCases tests edge cases in query execution
+func TestExecuteQueryEdgeCases(t *testing.T) {
+	db, err := Initialize(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create test table with data
+	if err := setupLogsTable(db); err != nil {
+		t.Fatalf("Failed to setup test table: %v", err)
+	}
+
+	// Insert test data
+	testEntries := []models.LogEntry{
+		{
+			Timestamp: time.Date(2020, 4, 15, 10, 0, 0, 0, time.UTC),
+			Username:  "jeff22",
+			Operation: "upload",
+			Size:      45,
+		},
+		{
+			Timestamp: time.Date(2020, 4, 15, 10, 5, 0, 0, time.UTC),
+			Username:  "alice42",
+			Operation: "download",
+			Size:      120,
+		},
+	}
+	_, err = InsertLogEntries(db, testEntries, false, "logs")
+	if err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		query      string
+		wantErr    bool
+		errMsg     string
+		expectRows int
+	}{
+		{
+			name:       "invalid SQL syntax",
+			query:      "SELCT * FROM logs", // Typo in SELECT
+			wantErr:    true,
+			errMsg:     "syntax error",
+		},
+		{
+			name:       "query non-existent table",
+			query:      "SELECT * FROM non_existent_table",
+			wantErr:    true,
+			errMsg:     "no such table",
+		},
+		{
+			name:       "query non-existent column",
+			query:      "SELECT non_existent_column FROM logs",
+			wantErr:    true,
+			errMsg:     "no such column",
+		},
+		{
+			name:       "valid simple query",
+			query:      "SELECT COUNT(*) as count FROM logs",
+			wantErr:    false,
+			expectRows: 1,
+		},
+		{
+			name:       "valid complex query",
+			query:      "SELECT username, operation, size FROM logs WHERE size > 50 ORDER BY size DESC",
+			wantErr:    false,
+			expectRows: 1, // Only alice42's record has size > 50
+		},
+		{
+			name:       "query with special characters",
+			query:      "SELECT * FROM logs WHERE username LIKE '%jeff%'",
+			wantErr:    false,
+			expectRows: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results, err := ExecuteQuery(db, tt.query)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("Expected error but got none")
+				} else if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Expected error containing '%s', got '%s'", tt.errMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				}
+				if tt.expectRows >= 0 && len(results) != tt.expectRows {
+					t.Errorf("Expected %d rows, got %d", tt.expectRows, len(results))
+				}
+			}
+		})
+	}
+}
+
+// TestDatabaseConnectionErrors tests database connection error scenarios
+func TestDatabaseConnectionErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		dbPath  string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid memory database",
+			dbPath:  ":memory:",
+			wantErr: false,
+		},
+		{
+			name:    "path to directory instead of file",
+			dbPath:  t.TempDir(),
+			wantErr: true,
+			errMsg:  "is a directory",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, err := Initialize(tt.dbPath)
+
+			if tt.wantErr {
+				if err == nil {
+					if db != nil {
+						db.Close()
+					}
+					t.Errorf("Expected error but got none")
+				} else if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Expected error containing '%s', got '%s'", tt.errMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				} else if db == nil {
+					t.Error("Expected database instance but got nil")
+				} else {
+					db.Close()
+				}
+			}
+		})
+	}
+}
+
+// TestDatabaseConcurrency tests concurrent database operations
+func TestDatabaseConcurrency(t *testing.T) {
+	// Use a temporary file database for concurrency testing since SQLite in-memory
+	// databases may not be properly shared between goroutines
+	dbPath := filepath.Join(t.TempDir(), "concurrency_test.db")
+	db, err := Initialize(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create test table
+	if err := setupLogsTable(db); err != nil {
+		t.Fatalf("Failed to setup test table: %v", err)
+	}
+
+	// Test concurrent inserts
+	const numGoroutines = 10
+	const recordsPerGoroutine = 5
+
+	errChan := make(chan error, numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(routineID int) {
+			entries := make([]models.LogEntry, recordsPerGoroutine)
+			for j := 0; j < recordsPerGoroutine; j++ {
+				entries[j] = models.LogEntry{
+					Timestamp: time.Now().Add(time.Duration(routineID*recordsPerGoroutine+j) * time.Second),
+					Username:  fmt.Sprintf("user_%d_%d", routineID, j),
+					Operation: "upload",
+					Size:      100,
+				}
+			}
+
+			// Use append mode for concurrency and specify table name
+			_, err := InsertLogEntries(db, entries, true, "logs")
+			errChan <- err
+		}(i)
+	}
+
+	// Wait for all goroutines
+	for i := 0; i < numGoroutines; i++ {
+		if err := <-errChan; err != nil {
+			t.Errorf("Concurrent insert failed: %v", err)
+		}
+	}
+
+	// Verify total count
+	results, err := ExecuteQuery(db, "SELECT COUNT(*) as count FROM logs")
+	if err != nil {
+		t.Fatalf("Failed to count records: %v", err)
+	}
+
+	expectedCount := int64(numGoroutines * recordsPerGoroutine)
+	if len(results) > 0 {
+		if count, ok := results[0]["count"].(int64); ok {
+			if count != expectedCount {
+				t.Errorf("Expected %d records, got %d", expectedCount, count)
+			}
+		}
+	}
+}
+
+// TestDatabaseIndexCreation tests index creation and usage
+func TestDatabaseIndexCreation(t *testing.T) {
+	db, err := Initialize(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create schema with indexes
+	schema := parser.TableSchema{
+		Name: "indexed_table",
+		Columns: []parser.ColumnSchema{
+			{Name: "name", Type: parser.TypeText, Index: true},
+			{Name: "email", Type: parser.TypeText, Index: true},
+			{Name: "age", Type: parser.TypeInteger, Index: false},
+		},
+	}
+
+	err = CreateTableFromSchema(db, &schema, false)
+	if err != nil {
+		t.Fatalf("Failed to create table with indexes: %v", err)
+	}
+
+	// Verify indexes were created
+	results, err := ExecuteQuery(db, "PRAGMA index_list(indexed_table)")
+	if err != nil {
+		t.Fatalf("Failed to get index list: %v", err)
+	}
+
+	if len(results) < 2 {
+		t.Errorf("Expected at least 2 indexes, got %d", len(results))
+	}
+
+	// Verify index names
+	expectedIndexes := []string{
+		"idx_indexed_table_name",
+		"idx_indexed_table_email",
+	}
+
+	foundIndexes := make(map[string]bool)
+	for _, result := range results {
+		if name, ok := result["name"].(string); ok {
+			foundIndexes[name] = true
+		}
+	}
+
+	for _, expectedIndex := range expectedIndexes {
+		if !foundIndexes[expectedIndex] {
+			t.Errorf("Expected index '%s' not found", expectedIndex)
+		}
+	}
 }

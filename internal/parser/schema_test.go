@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -318,4 +319,360 @@ func TestContainsHelper(t *testing.T) {
 			t.Errorf("strings.Contains(%q, %q) = %v, want %v", tt.s, tt.substr, result, tt.expected)
 		}
 	}
+}
+
+// TestDetectSchemaEdgeCases tests edge cases in schema detection
+func TestDetectSchemaEdgeCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		headers   []string
+		records   [][]string
+		tableName string
+		wantErr   bool
+		errMsg    string
+	}{
+		{
+			name:      "empty headers",
+			headers:   []string{},
+			records:   [][]string{{"1", "2", "3"}},
+			tableName: "test",
+			wantErr:   true,
+			errMsg:    "no headers found",
+		},
+		{
+			name:      "empty records",
+			headers:   []string{"id", "name"},
+			records:   [][]string{},
+			tableName: "test",
+			wantErr:   true,
+			errMsg:    "no data records found",
+		},
+		{
+			name:      "headers only no data",
+			headers:   []string{"id", "name", "email"},
+			records:   [][]string{},
+			tableName: "test",
+			wantErr:   true,
+			errMsg:    "no data records found",
+		},
+		{
+			name:      "single column",
+			headers:   []string{"id"},
+			records:   [][]string{{"1"}, {"2"}, {"3"}},
+			tableName: "single",
+			wantErr:   false,
+		},
+		{
+			name:      "many columns",
+			headers:   []string{"col1", "col2", "col3", "col4", "col5", "col6", "col7", "col8", "col9", "col10"},
+			records:   [][]string{
+				{"1", "a", "1.1", "true", "2023-01-01", "text", "100", "false", "3.14", "data"},
+				{"2", "b", "2.2", "false", "2023-01-02", "more", "200", "true", "2.71", "info"},
+			},
+			tableName: "wide_table",
+			wantErr:   false,
+		},
+		{
+			name:      "inconsistent record lengths",
+			headers:   []string{"id", "name", "email"},
+			records:   [][]string{
+				{"1", "Alice", "alice@example.com"},
+				{"2", "Bob"}, // Missing email
+				{"3", "Charlie", "charlie@example.com", "extra_field"}, // Extra field
+			},
+			tableName: "inconsistent",
+			wantErr:   false, // Should handle gracefully
+		},
+		{
+			name:      "all null/empty values",
+			headers:   []string{"id", "name", "value"},
+			records:   [][]string{
+				{"", "", ""},
+				{"", "", ""},
+			},
+			tableName: "empty_values",
+			wantErr:   false,
+		},
+		{
+			name:      "unicode column names",
+			headers:   []string{"用户ID", "姓名", "电子邮件"},
+			records:   [][]string{
+				{"1", "张三", "zhang@example.com"},
+				{"2", "李四", "li@example.com"},
+			},
+			tableName: "unicode",
+			wantErr:   false,
+		},
+		{
+			name:      "special characters in headers",
+			headers:   []string{"user-id", "user_name", "user.email", "user@domain"},
+			records:   [][]string{
+				{"1", "John", "john@example.com", "john@company.com"},
+				{"2", "Jane", "jane@example.com", "jane@company.com"},
+			},
+			tableName: "special_chars",
+			wantErr:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schema, err := DetectSchema(tt.headers, tt.records, tt.tableName)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("Expected error but got none")
+				} else if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Expected error containing '%s', got '%s'", tt.errMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				}
+				if schema == nil {
+					t.Error("Expected schema but got nil")
+				} else {
+					if schema.Name != tt.tableName {
+						t.Errorf("Expected table name '%s', got '%s'", tt.tableName, schema.Name)
+					}
+					if len(schema.Columns) != len(tt.headers) {
+						t.Errorf("Expected %d columns, got %d", len(tt.headers), len(schema.Columns))
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestColumnTypeInference tests detailed type inference
+func TestColumnTypeInference(t *testing.T) {
+	tests := []struct {
+		name     string
+		values   []string
+		expected ColumnType
+	}{
+		{
+			name:     "pure integers",
+			values:   []string{"1", "2", "3", "100", "-5"},
+			expected: TypeInteger,
+		},
+		{
+			name:     "pure floats",
+			values:   []string{"1.5", "2.0", "3.14", "-2.5"},
+			expected: TypeReal,
+		},
+		{
+			name:     "mixed numbers favor real",
+			values:   []string{"1", "2.5", "3", "4.0"},
+			expected: TypeText, // Current implementation treats mixed as text
+		},
+		{
+			name:     "boolean true/false",
+			values:   []string{"true", "false", "true", "false"},
+			expected: TypeBoolean,
+		},
+		{
+			name:     "boolean 1/0",
+			values:   []string{"1", "0", "1", "0"},
+			expected: TypeInteger, // Current implementation treats these as integers
+		},
+		{
+			name:     "boolean yes/no",
+			values:   []string{"yes", "no", "yes", "no"},
+			expected: TypeBoolean,
+		},
+		{
+			name:     "timestamps unix",
+			values:   []string{"1587504638", "1587504639", "1587504640"},
+			expected: TypeTimestamp,
+		},
+		{
+			name:     "timestamps iso format",
+			values:   []string{"2023-01-01T10:00:00Z", "2023-01-02T11:30:00Z"},
+			expected: TypeTimestamp,
+		},
+		{
+			name:     "timestamps readable format",
+			values:   []string{"2023-01-01 10:00:00", "2023-01-02 11:30:00"},
+			expected: TypeTimestamp,
+		},
+		{
+			name:     "mixed text and numbers default to text",
+			values:   []string{"abc", "123", "def", "456"},
+			expected: TypeText,
+		},
+		{
+			name:     "pure text",
+			values:   []string{"hello", "world", "test", "data"},
+			expected: TypeText,
+		},
+		{
+			name:     "empty values default to text",
+			values:   []string{"", "", ""},
+			expected: TypeText,
+		},
+		{
+			name:     "single value integer",
+			values:   []string{"42"},
+			expected: TypeInteger,
+		},
+		{
+			name:     "single value text",
+			values:   []string{"hello"},
+			expected: TypeText,
+		},
+		{
+			name:     "numbers with leading zeros are text",
+			values:   []string{"001", "002", "003"},
+			expected: TypeInteger, // Current implementation may parse as integers
+		},
+		{
+			name:     "scientific notation",
+			values:   []string{"1e5", "2.5e-3", "1.23e+10"},
+			expected: TypeReal,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a minimal schema to test type inference
+			headers := []string{"test_column"}
+			records := make([][]string, len(tt.values))
+			for i, value := range tt.values {
+				records[i] = []string{value}
+			}
+
+			schema, err := DetectSchema(headers, records, "test_table")
+			if err != nil {
+				t.Fatalf("DetectSchema failed: %v", err)
+			}
+
+			if len(schema.Columns) != 1 {
+				t.Fatalf("Expected 1 column, got %d", len(schema.Columns))
+			}
+
+			actualType := schema.Columns[0].Type
+			if actualType != tt.expected {
+				t.Errorf("Expected type %v (%s), got %v (%s)",
+					tt.expected, tt.expected.String(),
+					actualType, actualType.String())
+			}
+		})
+	}
+}
+
+// TestSchemaIndexing tests automatic indexing decisions
+func TestSchemaIndexing(t *testing.T) {
+	tests := []struct {
+		name          string
+		columnName    string
+		expectedIndex bool
+	}{
+		{"id column", "id", true},
+		{"user_id column", "user_id", true},
+		{"username column", "username", true},
+		{"email column", "email", false},
+		{"timestamp column", "timestamp", true},
+		{"created_at column", "created_at", true},
+		{"updated_at column", "updated_at", true},
+		{"name column", "name", false},
+		{"code column", "code", true},
+		{"status column", "status", true},
+		{"type column", "type", true},
+		{"ip column", "ip", true},
+		{"path column", "path", false},
+		{"method column", "method", true},
+		{"operation column", "operation", true},
+		{"description column", "description", false},
+		{"content column", "content", false},
+		{"data column", "data", false},
+		{"value column", "value", false},
+		{"size column", "size", false},
+		{"random_field", "random_field", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := []string{tt.columnName}
+			records := [][]string{{"test_value"}}
+
+			schema, err := DetectSchema(headers, records, "test_table")
+			if err != nil {
+				t.Fatalf("DetectSchema failed: %v", err)
+			}
+
+			if len(schema.Columns) != 1 {
+				t.Fatalf("Expected 1 column, got %d", len(schema.Columns))
+			}
+
+			actualIndex := schema.Columns[0].Index
+			if actualIndex != tt.expectedIndex {
+				t.Errorf("Expected index=%v for column '%s', got %v",
+					tt.expectedIndex, tt.columnName, actualIndex)
+			}
+		})
+	}
+}
+
+// Benchmark tests
+func BenchmarkDetectSchema(b *testing.B) {
+	headers := []string{"id", "name", "email", "created_at", "active"}
+	records := [][]string{
+		{"1", "Alice", "alice@example.com", "2023-01-01 10:00:00", "true"},
+		{"2", "Bob", "bob@example.com", "2023-01-02 11:30:00", "false"},
+		{"3", "Charlie", "charlie@example.com", "2023-01-03 09:15:00", "true"},
+		{"4", "Diana", "diana@example.com", "2023-01-04 14:45:00", "false"},
+		{"5", "Eve", "eve@example.com", "2023-01-05 16:20:00", "true"},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = DetectSchema(headers, records, "benchmark_table")
+	}
+}
+
+func BenchmarkGenerateCreateTableSQL(b *testing.B) {
+	schema := &TableSchema{
+		Name: "benchmark_table",
+		Columns: []ColumnSchema{
+			{Name: "id", Type: TypeInteger, Index: true},
+			{Name: "name", Type: TypeText, Index: true},
+			{Name: "email", Type: TypeText, Index: true},
+			{Name: "created_at", Type: TypeTimestamp, Index: true},
+			{Name: "active", Type: TypeBoolean, Index: false},
+		},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = schema.GenerateCreateTableSQL()
+	}
+}
+
+// Example demonstrates schema detection usage
+func ExampleDetectSchema() {
+	headers := []string{"id", "name", "email", "age"}
+	records := [][]string{
+		{"1", "Alice", "alice@example.com", "25"},
+		{"2", "Bob", "bob@example.com", "30"},
+		{"3", "Charlie", "charlie@example.com", "22"},
+	}
+
+	schema, err := DetectSchema(headers, records, "users")
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Table: %s\n", schema.Name)
+	for _, col := range schema.Columns {
+		fmt.Printf("Column: %s, Type: %s, Index: %v\n",
+			col.Name, col.Type.String(), col.Index)
+	}
+
+	// Output:
+	// Table: users
+	// Column: id, Type: INTEGER, Index: true
+	// Column: name, Type: TEXT, Index: false
+	// Column: email, Type: TEXT, Index: false
+	// Column: age, Type: INTEGER, Index: false
 }

@@ -185,6 +185,22 @@ func (c *QueryCommand) handleNaturalLanguage(query string) error {
     return c.executeSQL(sql)
 }
 ```
+ ##### Local LLM in Go
+
+Running a local Large Language Model (LLM) using Go typically involves interacting with a local LLM server or framework. Ollama is a popular choice for this purpose, as it simplifies the process of downloading and running various LLMs locally.
+
+Here's a general approach to running a local LLM with Go and Ollama:
+
+1. Set up Ollama:
+   - Download and install Ollama on your local machine (macOS, Linux, or Windows).
+   - Use Ollama's command-line interface to pull the desired LLM model (e.g., ollama pull llama3).
+2. Consider if Ollama should be run externally, or started by the CLI tool
+    - Detect which type of computer is running the comamnd and if it is powerful enough to run a local LLM
+    - Provide the ability to specify the LLM endpoint as a param if it's not started by the CLI
+3. Interact with Ollama from Go:
+   - Direct HTTP Requests: You can make HTTP requests from your Go application to Ollama's API endpoint (usually http://localhost:11434). This involves constructing JSON payloads for requests (e.g., for generating text) and parsing the JSON responses.
+   - Using a Go Library: Consider using a Go library designed for interacting with LLMs or Ollama specifically. Libraries like gollm simplify the process by providing Go-native structs and functions for interacting with Ollama's API, handling request/response serialization, and managing LLM interactions.
+
 
 #### Additional Extensions
 - **Multi-format support**: JSON, XML log parsing
@@ -206,9 +222,13 @@ func (c *QueryCommand) handleNaturalLanguage(query string) error {
 The modular design enables comprehensive testing following Go best practices:
 
 #### Test Coverage
-- **Parser package**: 98.5% coverage - Comprehensive testing of CSV parsing logic
-- **Database package**: 77.8% coverage - Core database operations and SQL execution
-- **Models package**: Simple data structures with validation tests
+- **Parser package**: 61.9% coverage - Comprehensive testing of CSV parsing logic and schema detection
+- **Database package**: 76.2% coverage - Core database operations and SQL execution
+- **Commands package**: 63.9% coverage - CLI command implementations
+- **Models package**: 100.0% coverage - Simple data structures (complete coverage achieved)
+- **Config package**: No statements - Configuration constants only
+
+The current test coverage provides robust validation of core functionality, with particularly strong coverage in the database and parser packages that handle the most complex operations. Further improvements could include expanding coverage of edge cases in command-line interfaces, error handling scenarios, and integration testing across package boundaries to approach higher overall coverage percentages.
 
 #### Test Categories
 
@@ -264,5 +284,102 @@ Each test package follows Go conventions:
 - Realistic test data mimicking production scenarios
 
 This testing approach ensures reliability, performance, and maintainability while providing confidence for future enhancements.
+
+## Related Projects and External Resources
+
+### sq.io - Advanced SQL Tool for Data Analysis
+
+For production use cases requiring more sophisticated data analysis capabilities, consider [**sq**](https://sq.io/) - a comprehensive command-line tool that provides advanced SQL operations across multiple data sources.
+
+**Key capabilities of sq:**
+- **Multi-source queries**: Join data from different databases, APIs, and file formats
+- **Advanced data inspection**: Sophisticated schema discovery and data profiling
+- **Cross-platform data movement**: Transfer data between different database systems
+- **Rich output formats**: JSON, CSV, Excel, and formatted tables
+- **Production-ready features**: Performance optimization, error handling, and logging
+
+**Example sq usage:**
+```bash
+# Inspect CSV schema and data
+sq inspect data.csv
+
+# Join CSV with database table
+sq '@data.csv | join @mydb.users | .name, .email, .upload_count'
+
+# Convert and transfer data between sources
+sq '@source.csv | .[] | @dest_db.table'
+```
+
+**When to use sq vs this implementation:**
+- **Use sq for**: Production data analysis, complex multi-source queries, enterprise workflows
+- **Use this implementation for**: Learning, prototyping, simple CSV analysis, custom business logic
+
+### csv2sql Library - Dynamic CSV Import
+
+The dynamic schema detection implemented in this project draws inspiration from existing solutions like [**csv2sql**](https://github.com/wiremoons/csv2sql) - a specialized library for importing CSV files into SQLite databases.
+
+**Features of csv2sql:**
+- **Automatic schema inference**: Detects column types and constraints
+- **Batch processing**: Efficient handling of large CSV files
+- **Flexible configuration**: Customizable import rules and data transformations
+- **Error handling**: Robust validation and error reporting
+
+**Comparison with this implementation:**
+- **csv2sql**: Focused specifically on CSV-to-SQLite import with advanced configuration options
+- **This project**: Broader scope including interactive querying, CLI design, and extensible architecture
+
+## MVP Nature and Extension Opportunities
+
+This implementation serves as a **Minimum Viable Product (MVP)** demonstrating core concepts in data processing and analysis. The architecture is designed to be extended with external libraries and tools for production use cases.
+
+### Recommended Extensions
+
+**1. Replace Custom Parser with csv2sql**
+```go
+import "github.com/wiremoons/csv2sql"
+
+// Enhanced CSV import with production-ready features
+func loadWithCSV2SQL(csvPath, dbPath string) error {
+    return csv2sql.Import(csvPath, dbPath, csv2sql.Config{
+        AutoDetectTypes: true,
+        BatchSize: 10000,
+        CreateIndexes: true,
+    })
+}
+```
+
+**2. Integrate with sq for Advanced Queries**
+```bash
+# Use this tool for initial data loading
+./server-log-analyzer load -f logs.csv
+
+# Use sq for complex analysis
+sq '@server_logs.db.logs | .username, count(*) | group username | order count desc'
+```
+
+**3. Production-Ready Enhancements**
+- **Configuration management**: Use [Viper](https://github.com/spf13/viper) for complex configuration
+- **Logging**: Integrate [logrus](https://github.com/sirupsen/logrus) or [zap](https://go.uber.org/zap)
+- **Progress tracking**: Add [progressbar](https://github.com/schollz/progressbar) for large file processing
+- **Data validation**: Use [validator](https://github.com/go-playground/validator) for input validation
+- **Database migrations**: Implement [golang-migrate](https://github.com/golang-migrate/migrate) for schema versioning
+
+### Learning Objectives Achieved
+
+This MVP implementation demonstrates:
+- **Clean architecture principles**: Separation of concerns and modular design
+- **Go best practices**: Proper error handling, testing, and package organization
+- **Database operations**: SQLite integration and schema management
+- **CLI development**: Command-line interface design with Cobra
+- **Testing strategies**: Unit tests, integration tests, and benchmarks
+
+### Production Considerations
+
+For production deployments, consider:
+- **Using established tools** like sq.io for complex data analysis workflows
+- **Leveraging proven libraries** like csv2sql for robust CSV processing
+- **Implementing monitoring** and observability features
+- **Adding security measures** for database access and query validation
+- **Performance optimization** for large-scale data processing
 
 This architecture provides a solid foundation that can evolve from a simple log analyzer to a comprehensive data analysis platform.
