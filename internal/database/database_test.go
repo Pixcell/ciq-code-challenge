@@ -870,7 +870,7 @@ func TestInsertRecordsEdgeCases(t *testing.T) {
 				t.Fatalf("Failed to clear table: %v", err)
 			}
 
-			count, err := InsertRecords(db, "test_records", tt.headers, tt.records)
+			count, err := InsertRecords(db, "test_records", tt.headers, tt.records, &schema)
 
 			if tt.wantErr {
 				if err == nil {

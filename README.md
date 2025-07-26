@@ -223,7 +223,7 @@ The modular design enables comprehensive testing following Go best practices:
 
 #### Test Coverage
 - **Parser package**: 61.9% coverage - Comprehensive testing of CSV parsing logic and schema detection
-- **Database package**: 76.2% coverage - Core database operations and SQL execution
+- **Database package**: 69.7% coverage - Core database operations and SQL execution
 - **Commands package**: 63.9% coverage - CLI command implementations
 - **Models package**: 100.0% coverage - Simple data structures (complete coverage achieved)
 - **Config package**: No statements - Configuration constants only

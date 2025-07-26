@@ -4,7 +4,9 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
 	"server-log-analyzer/internal/models"
@@ -131,14 +133,71 @@ func CreateTableFromSchema(db DB, schema *parser.TableSchema, replaceMode bool) 
 	return nil
 }
 
-// InsertRecords inserts CSV records using dynamic schema
-func InsertRecords(db DB, tableName string, headers []string, records [][]string) (int64, error) {
+// convertValue converts a string value to the appropriate type based on the column type
+func convertValue(value string, columnType parser.ColumnType) (interface{}, error) {
+	switch columnType {
+	case parser.TypeTimestamp:
+		// Use the same parsing logic as in csv.go
+		return parseTimestamp(value)
+	case parser.TypeInteger:
+		return strconv.Atoi(value)
+	case parser.TypeReal:
+		return strconv.ParseFloat(value, 64)
+	case parser.TypeBoolean:
+		return strconv.ParseBool(value)
+	case parser.TypeText:
+		fallthrough
+	default:
+		return value, nil
+	}
+}
+
+// parseTimestamp converts a timestamp string to time.Time
+// This mirrors the logic from parser/csv.go to ensure consistency
+func parseTimestamp(timestampStr string) (interface{}, error) {
+	// First try to parse as UNIX timestamp
+	if timestamp, err := strconv.ParseInt(timestampStr, 10, 64); err == nil {
+		// Handle both second and millisecond precision
+		// If timestamp > year 2100 in seconds, assume it's milliseconds
+		if timestamp > 4102444800 { // January 1, 2100 in seconds
+			return time.Unix(timestamp/1000, (timestamp%1000)*1000000), nil
+		}
+		return time.Unix(timestamp, 0), nil
+	}
+
+	// Try multiple timestamp formats
+	timestampFormats := []string{
+		time.RFC3339,                     // 2006-01-02T15:04:05Z07:00
+		"2006-01-02 15:04:05",           // 2020-04-15 10:00:00
+		"2006-01-02T15:04:05",           // 2020-04-15T10:00:00
+		"2006-01-02 15:04:05.000",       // 2020-04-15 10:00:00.000
+		"01/02/2006 15:04:05",           // 04/15/2020 10:00:00
+		"2006-01-02",                    // 2023-01-15
+		"Mon Jan 2 15:04:05 MST 2006",   // Sun Apr 12 22:10:38 UTC 2020
+		"Mon Jan 2 15:04:05 2006",       // Sun Apr 12 22:10:38 2020
+	}
+
+	for _, format := range timestampFormats {
+		if t, err := time.Parse(format, timestampStr); err == nil {
+			return t, nil
+		}
+	}
+
+	return nil, fmt.Errorf("timestamp format not recognized, expected UNIX timestamp or common date formats like '2006-01-02 15:04:05', '2006-01-02', or 'Mon Jan 2 15:04:05 MST 2006'")
+}
+
+// InsertRecords inserts CSV records using dynamic schema with proper type conversion
+func InsertRecords(db DB, tableName string, headers []string, records [][]string, schema *parser.TableSchema) (int64, error) {
 	if len(records) == 0 {
 		return 0, nil
 	}
 
 	if len(headers) == 0 {
 		return 0, fmt.Errorf("no headers provided")
+	}
+
+	if schema == nil {
+		return 0, fmt.Errorf("schema is required for type conversion")
 	}
 
 	// Build INSERT statement with placeholders
@@ -168,14 +227,20 @@ func InsertRecords(db DB, tableName string, headers []string, records [][]string
 			return insertedCount, fmt.Errorf("record %d has %d fields, expected %d", i+1, len(record), len(headers))
 		}
 
-		// Convert record to interface{} slice for SQL driver
+		// Convert record to interface{} slice with proper type conversion
 		args := make([]interface{}, len(record))
 		for j, value := range record {
 			// Convert empty strings to NULL for non-text columns
 			if value == "" {
 				args[j] = nil
 			} else {
-				args[j] = value
+				// Apply type conversion based on schema
+				convertedValue, err := convertValue(value, schema.Columns[j].Type)
+				if err != nil {
+					return insertedCount, fmt.Errorf("failed to convert value '%s' for column '%s' (type %s) in record %d: %w",
+						value, headers[j], schema.Columns[j].Type.String(), i+1, err)
+				}
+				args[j] = convertedValue
 			}
 		}
 

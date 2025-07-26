@@ -145,7 +145,7 @@ func runLoadCommand(csvFile, dbFile, tableName string, appendMode, schemaDetecti
 		}
 
 		// Insert records using dynamic schema
-		count, err := database.InsertRecords(db, tableName, headers, records)
+		count, err := database.InsertRecords(db, tableName, headers, records, schema)
 		if err != nil {
 			return fmt.Errorf("failed to insert records: %w", err)
 		}
